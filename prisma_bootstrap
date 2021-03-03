@@ -1,0 +1,115 @@
+#!/bin/bash
+
+API="https://api.east-01.network.prismacloud.io"
+NAMESPACE="/806775361903163392/jody/vms"
+APOCTL_URL="https://download.aporeto.com/prismacloud/app2/apoctl/linux/apoctl"
+
+main() {
+  _install || { err "Install failed"; return 3; }
+  return 0
+}
+
+_install() {
+  trap _cleanup EXIT
+  tmpdir=$(mktemp -d)
+  cd "$tmpdir" || return $?
+  _echo_prisma-bootstrap > prisma-bootstrap || return $?
+  _echo_systemd > prisma-bootstrap.service || return $?
+  install -m 644 prisma-bootstrap.service /lib/systemd/system/prisma-bootstrap.service || return $?
+  install -m 755 prisma-bootstrap /usr/local/sbin/prisma-bootstrap || return $?
+  systemctl enable prisma-bootstrap || return $?
+}
+
+_cleanup() {
+  [[ "$tmpdir" ]] && rm -rf "$tmpdir"
+}
+
+_echo_systemd()
+{
+cat << EOF
+[Unit]
+Description=Prisma BootStrap
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/prisma-bootstrap
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+_echo_prisma-bootstrap()
+{
+cat << EOF
+#!/bin/bash
+
+run=true
+apoctl=""
+main() {
+  trap _cleanup EXIT
+  trap _sigterm SIGTERM
+  trap _sigint SIGINT
+  trap _sighup SIGHUP
+  apoctl=\$(mktemp)
+  rm -rf "\$apoctl"
+  _download || return \$?
+  _register || return \$?
+  systemctl disable prisma-bootstrap
+}
+
+_download() {
+  while \$run; do
+    err "Attempting to download apoctl"
+    curl -o "\$apoctl" "$APOCTL_URL" && {
+      chmod +x "\$apoctl" || return \$?
+      err "apoctl downloaded"
+      return 0
+    }
+    chmod +x "\$apoctl" || return \$?
+    err "apoctl download failed, will try again"
+    sleep 5
+  done
+}
+
+_register() {
+  while \$run; do
+    err "Registering"
+    "\$apoctl" enforcer install linux --api "$API" --namespace "$NAMESPACE" && {
+      err "Registered"
+      return 0
+    }
+    err "Registration failed, will try again"
+    sleep 5
+  done
+}
+
+_cleanup() {
+  rm -rf "\$apoctl"
+}
+
+_sigterm() {
+  err "Caught SIGTERM"
+  run=false
+}
+
+_sigint() {
+  err "Caught SIGINT"
+  run=false
+}
+
+_sighup() {
+  err "Caught SIGHUP"
+}
+
+err() { echo "\$@" 1>&2; }
+
+main "\$@"
+EOF
+}
+
+err() { echo "$@" 1>&2; }
+
+main "$@"
